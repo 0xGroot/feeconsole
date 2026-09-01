@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import QRCode from 'qrcode'
 import {
   BrowserProvider,
   Contract,
@@ -57,7 +58,42 @@ export default function App() {
   const { disconnect } = useDisconnect()
   const { switchChainAsync, isPending: isSwitching } = useSwitchChain()
   const [pendingConnectorId, setPendingConnectorId] = useState(null)
+  const [wcUri, setWcUri] = useState('')
+  const [wcQr, setWcQr] = useState('')
+  const [wcCopied, setWcCopied] = useState(false)
   const busy = isConnecting || isSwitching
+  const walletConnectConnector = connectors.find((item) => item.id === 'walletConnect')
+
+  useEffect(() => {
+    if (!walletConnectConnector) return undefined
+    const onMessage = (payload) => {
+      if (payload?.type === 'display_uri' && typeof payload.data === 'string') {
+        setWcUri(payload.data)
+      }
+    }
+    walletConnectConnector.emitter.on('message', onMessage)
+    return () => {
+      walletConnectConnector.emitter.off('message', onMessage)
+    }
+  }, [walletConnectConnector])
+
+  useEffect(() => {
+    if (!wcUri) {
+      setWcQr('')
+      return undefined
+    }
+    let cancelled = false
+    QRCode.toDataURL(wcUri, {
+      margin: 1,
+      width: 280,
+      color: { dark: '#080d16', light: '#ffffff' },
+    }).then((url) => {
+      if (!cancelled) setWcQr(url)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [wcUri])
 
   const [v2Pool, setV2Pool] = useState('')
   const [v2Fee, setV2Fee] = useState('')
@@ -73,10 +109,15 @@ export default function App() {
 
   async function connectWallet(selectedConnector) {
     setStatus('')
+    setWcCopied(false)
     const next = selectedConnector ?? connectors.find((item) => item.id === 'injected') ?? connectors[0]
     setPendingConnectorId(next?.id ?? null)
     try {
       if (!next) throw Error('No wallet connector available.')
+      if (next.id === 'walletConnect') {
+        const provider = await next.getProvider()
+        provider?.once?.('display_uri', setWcUri)
+      }
       const result = await connectAsync({ connector: next })
       if (result.chainId !== base.id) await switchChainAsync({ chainId: base.id })
       setStatus('Wallet connected on Base.')
@@ -84,11 +125,30 @@ export default function App() {
       setStatus(formatError(error, 'Could not connect wallet.'))
     } finally {
       setPendingConnectorId(null)
+      setWcUri('')
     }
+  }
+
+  async function closeWalletConnect() {
+    setWcUri('')
+    setWcQr('')
+    try {
+      const provider = await walletConnectConnector?.getProvider()
+      await provider?.disconnect?.()
+    } catch {
+      disconnect()
+    }
+  }
+
+  async function copyWalletConnectUri() {
+    if (!wcUri) return
+    await navigator.clipboard.writeText(wcUri)
+    setWcCopied(true)
   }
 
   function disconnectWallet() {
     disconnect()
+    setWcUri('')
     setStatus('Wallet disconnected.')
   }
 
@@ -207,6 +267,36 @@ export default function App() {
           {status && <p className="status">{status}</p>}
         </div>
       </header>
+      {wcUri && (
+        <div
+          className="wc-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="wc-title"
+          onClick={closeWalletConnect}
+        >
+          <div className="wc-modal" onClick={(event) => event.stopPropagation()}>
+            <h2 id="wc-title">WalletConnect</h2>
+            <p className="hint">Scan this QR code with your mobile wallet.</p>
+            {wcQr ? (
+              <img className="wc-qr" src={wcQr} alt="WalletConnect QR code" />
+            ) : (
+              <p className="status">Generating QR code...</p>
+            )}
+            <div className="actions">
+              <button type="button" onClick={copyWalletConnectUri}>
+                {wcCopied ? 'Copied' : 'Copy link'}
+              </button>
+              <button type="button" className="secondary" onClick={() => { window.location.href = wcUri }}>
+                Open wallet
+              </button>
+              <button type="button" className="secondary" onClick={closeWalletConnect}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <section className="grid">
         <article className="card">
           <h2>V2 Pools (classic SAMM/VAMM)</h2>

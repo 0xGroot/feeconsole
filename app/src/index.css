@@ -201,6 +201,46 @@ code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.wc-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #080d16cc;
+}
+
+.wc-modal {
+  width: min(420px, 100%);
+  background: linear-gradient(#141d2cdb, #0b1019f2);
+  border: 1px solid #293245;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 18px 50px #00000052;
+}
+
+.wc-modal h2 {
+  margin-bottom: 6px;
+}
+
+.wc-qr {
+  display: block;
+  width: min(280px, 100%);
+  height: auto;
+  margin: 16px auto;
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+}
+
+.wc-copy {
+  word-break: break-all;
+  color: #9aa7b8;
+  margin: 0 0 14px;
+  font-size: 0.82rem;
+}
+
 @media (width <= 900px) {
   .app-header {
     flex-direction: column;

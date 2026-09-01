@@ -12,8 +12,8 @@ export const WC_PROJECT_ID =
 const metadata = {
   name: 'Fee Console',
   description: 'scale.farm fee management',
-  url: 'https://scale.farm',
-  icons: ['https://scale.farm/favicon.png'],
+  url: typeof window === 'undefined' ? 'https://0xgroot.github.io' : window.location.origin,
+  icons: ['https://0xgroot.github.io/feeconsole/favicon.svg'],
 }
 
 export const config = createConfig({
@@ -22,12 +22,11 @@ export const config = createConfig({
     injected({ shimDisconnect: true }),
     walletConnect({
       projectId: WC_PROJECT_ID,
-      showQrModal: true,
+      // Reown's hosted modal 403s on GitHub Pages because this origin is not
+      // allowlisted. Pairing still works if we render the wc: URI ourselves.
+      showQrModal: false,
       metadata,
       disableProviderPing: true,
-      qrModalOptions: {
-        themeMode: 'dark',
-      },
     }),
   ],
   transports: {
