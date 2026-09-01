@@ -45,6 +45,42 @@ function formatError(error, fallback) {
   return error ? error.shortMessage ?? error.reason ?? error.message ?? fallback : fallback
 }
 
+function isOriginBlocked(value) {
+  return /origin not allowed|Unauthorized: origin/i.test(String(value ?? ''))
+}
+
+function originBlockedMessage() {
+  const origin = typeof window === 'undefined' ? 'https://0xgroot.github.io' : window.location.origin
+  return `WalletConnect blocked ${origin}. Add that exact origin (no /feeconsole path) in Reown Dashboard → Project Domains, wait about a minute, then reload.`
+}
+
+function inspectWalletConnectLog(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'object') {
+    return [value.msg, value.message, value.reason, value.shortMessage].filter(Boolean).join(' ')
+  }
+  return String(value)
+}
+
+function watchWalletConnectOriginBlock(onBlocked) {
+  const methods = ['log', 'info', 'warn', 'error']
+  const originals = Object.fromEntries(methods.map((method) => [method, console[method].bind(console)]))
+  const inspect = (args) => {
+    const text = args.map(inspectWalletConnectLog).join(' ')
+    if (isOriginBlocked(text)) onBlocked()
+  }
+  for (const method of methods) {
+    console[method] = (...args) => {
+      inspect(args)
+      originals[method](...args)
+    }
+  }
+  return () => {
+    for (const method of methods) console[method] = originals[method]
+  }
+}
+
 function connectorLabel(connector) {
   if (connector.id === 'walletConnect') return 'WalletConnect'
   if (connector.id === 'injected') return 'Browser Wallet'
@@ -58,9 +94,12 @@ export default function App() {
   const { disconnect } = useDisconnect()
   const { switchChainAsync, isPending: isSwitching } = useSwitchChain()
   const [pendingConnectorId, setPendingConnectorId] = useState(null)
+  const [wcOpen, setWcOpen] = useState(false)
   const [wcUri, setWcUri] = useState('')
   const [wcQr, setWcQr] = useState('')
+  const [wcHint, setWcHint] = useState('')
   const [wcCopied, setWcCopied] = useState(false)
+  const [wcOriginBlocked, setWcOriginBlocked] = useState(false)
   const busy = isConnecting || isSwitching
   const walletConnectConnector = connectors.find((item) => item.id === 'walletConnect')
 
@@ -112,26 +151,55 @@ export default function App() {
     setWcCopied(false)
     const next = selectedConnector ?? connectors.find((item) => item.id === 'injected') ?? connectors[0]
     setPendingConnectorId(next?.id ?? null)
+    const usingWalletConnect = next?.id === 'walletConnect'
+    let stopWatching = () => {}
+    let originBlocked = false
+    if (usingWalletConnect) {
+      setWcOpen(true)
+      setWcUri('')
+      setWcQr('')
+      setWcHint('Connecting to WalletConnect…')
+      setWcOriginBlocked(false)
+      stopWatching = watchWalletConnectOriginBlock(() => {
+        originBlocked = true
+        setWcOriginBlocked(true)
+        setWcHint(originBlockedMessage())
+      })
+    }
     try {
       if (!next) throw Error('No wallet connector available.')
-      if (next.id === 'walletConnect') {
+      if (usingWalletConnect) {
         const provider = await next.getProvider()
-        provider?.once?.('display_uri', setWcUri)
+        provider?.on?.('display_uri', (uri) => {
+          setWcUri(uri)
+          setWcHint('')
+        })
       }
       const result = await connectAsync({ connector: next })
       if (result.chainId !== base.id) await switchChainAsync({ chainId: base.id })
       setStatus('Wallet connected on Base.')
-    } catch (error) {
-      setStatus(formatError(error, 'Could not connect wallet.'))
-    } finally {
-      setPendingConnectorId(null)
+      setWcOpen(false)
       setWcUri('')
+      setWcHint('')
+      setWcOriginBlocked(false)
+    } catch (error) {
+      const message = originBlocked || isOriginBlocked(formatError(error, ''))
+        ? originBlockedMessage()
+        : formatError(error, 'Could not connect wallet.')
+      if (usingWalletConnect) setWcHint(message)
+      else setStatus(message)
+    } finally {
+      stopWatching()
+      setPendingConnectorId(null)
     }
   }
 
   async function closeWalletConnect() {
+    setWcOpen(false)
     setWcUri('')
     setWcQr('')
+    setWcHint('')
+    setWcOriginBlocked(false)
     try {
       const provider = await walletConnectConnector?.getProvider()
       await provider?.disconnect?.()
@@ -148,7 +216,9 @@ export default function App() {
 
   function disconnectWallet() {
     disconnect()
+    setWcOpen(false)
     setWcUri('')
+    setWcHint('')
     setStatus('Wallet disconnected.')
   }
 
@@ -267,7 +337,7 @@ export default function App() {
           {status && <p className="status">{status}</p>}
         </div>
       </header>
-      {wcUri && (
+      {wcOpen && (
         <div
           className="wc-overlay"
           role="dialog"
@@ -277,19 +347,27 @@ export default function App() {
         >
           <div className="wc-modal" onClick={(event) => event.stopPropagation()}>
             <h2 id="wc-title">WalletConnect</h2>
-            <p className="hint">Scan this QR code with your mobile wallet.</p>
             {wcQr ? (
-              <img className="wc-qr" src={wcQr} alt="WalletConnect QR code" />
+              <>
+                <p className="hint">Scan this QR code with your mobile wallet.</p>
+                <img className="wc-qr" src={wcQr} alt="WalletConnect QR code" />
+              </>
             ) : (
-              <p className="status">Generating QR code...</p>
+              <p className={wcOriginBlocked ? 'wc-error' : 'status'}>
+                {wcHint || 'Connecting to WalletConnect…'}
+              </p>
             )}
             <div className="actions">
-              <button type="button" onClick={copyWalletConnectUri}>
-                {wcCopied ? 'Copied' : 'Copy link'}
-              </button>
-              <button type="button" className="secondary" onClick={() => { window.location.href = wcUri }}>
-                Open wallet
-              </button>
+              {wcUri && (
+                <>
+                  <button type="button" onClick={copyWalletConnectUri}>
+                    {wcCopied ? 'Copied' : 'Copy link'}
+                  </button>
+                  <button type="button" className="secondary" onClick={() => { window.location.href = wcUri }}>
+                    Open wallet
+                  </button>
+                </>
+              )}
               <button type="button" className="secondary" onClick={closeWalletConnect}>
                 Cancel
               </button>
