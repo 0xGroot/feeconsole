@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import {
   BrowserProvider,
@@ -45,13 +45,15 @@ function formatError(error, fallback) {
   return error ? error.shortMessage ?? error.reason ?? error.message ?? fallback : fallback
 }
 
-function isOriginBlocked(value) {
-  return /origin not allowed|Unauthorized: origin/i.test(String(value ?? ''))
+function isWalletConnectSetupFailure(value) {
+  return /origin not allowed|Unauthorized: origin|Connection interrupted while trying to subscribe/i.test(
+    String(value ?? ''),
+  )
 }
 
-function originBlockedMessage() {
+function walletConnectSetupMessage() {
   const origin = typeof window === 'undefined' ? 'https://0xgroot.github.io' : window.location.origin
-  return `WalletConnect blocked ${origin}. Add that exact origin (no /feeconsole path) in Reown Dashboard → Project Domains, wait about a minute, then reload.`
+  return `WalletConnect could not start a pairing session for ${origin}. Reown domain allowlisting can take up to 6 hours. Confirm the domain is exactly that origin (no /feeconsole), wait, hard-reload, then retry.`
 }
 
 function inspectWalletConnectLog(value) {
@@ -63,12 +65,12 @@ function inspectWalletConnectLog(value) {
   return String(value)
 }
 
-function watchWalletConnectOriginBlock(onBlocked) {
+function watchWalletConnectSetupFailure(onFailure) {
   const methods = ['log', 'info', 'warn', 'error']
   const originals = Object.fromEntries(methods.map((method) => [method, console[method].bind(console)]))
   const inspect = (args) => {
     const text = args.map(inspectWalletConnectLog).join(' ')
-    if (isOriginBlocked(text)) onBlocked()
+    if (isWalletConnectSetupFailure(text)) onFailure()
   }
   for (const method of methods) {
     console[method] = (...args) => {
@@ -76,8 +78,13 @@ function watchWalletConnectOriginBlock(onBlocked) {
       originals[method](...args)
     }
   }
+  const onUnhandled = (event) => {
+    if (isWalletConnectSetupFailure(event?.reason?.message || event?.reason)) onFailure()
+  }
+  window.addEventListener('unhandledrejection', onUnhandled)
   return () => {
     for (const method of methods) console[method] = originals[method]
+    window.removeEventListener('unhandledrejection', onUnhandled)
   }
 }
 
@@ -100,6 +107,8 @@ export default function App() {
   const [wcHint, setWcHint] = useState('')
   const [wcCopied, setWcCopied] = useState(false)
   const [wcOriginBlocked, setWcOriginBlocked] = useState(false)
+  const wcUriRef = useRef('')
+  const uriTimerRef = useRef()
   const busy = isConnecting || isSwitching
   const walletConnectConnector = connectors.find((item) => item.id === 'walletConnect')
 
@@ -107,7 +116,14 @@ export default function App() {
     if (!walletConnectConnector) return undefined
     const onMessage = (payload) => {
       if (payload?.type === 'display_uri' && typeof payload.data === 'string') {
+        wcUriRef.current = payload.data
+        if (uriTimerRef.current) {
+          window.clearTimeout(uriTimerRef.current)
+          uriTimerRef.current = undefined
+        }
         setWcUri(payload.data)
+        setWcHint('')
+        setWcOriginBlocked(false)
       }
     }
     walletConnectConnector.emitter.on('message', onMessage)
@@ -153,28 +169,30 @@ export default function App() {
     setPendingConnectorId(next?.id ?? null)
     const usingWalletConnect = next?.id === 'walletConnect'
     let stopWatching = () => {}
-    let originBlocked = false
+    let setupFailed = false
     if (usingWalletConnect) {
+      wcUriRef.current = ''
       setWcOpen(true)
       setWcUri('')
       setWcQr('')
       setWcHint('Connecting to WalletConnect…')
       setWcOriginBlocked(false)
-      stopWatching = watchWalletConnectOriginBlock(() => {
-        originBlocked = true
+      stopWatching = watchWalletConnectSetupFailure(() => {
+        if (wcUriRef.current) return
+        setupFailed = true
         setWcOriginBlocked(true)
-        setWcHint(originBlockedMessage())
+        setWcHint(walletConnectSetupMessage())
       })
+      uriTimerRef.current = window.setTimeout(() => {
+        if (wcUriRef.current) return
+        setupFailed = true
+        setWcOriginBlocked(true)
+        setWcHint(walletConnectSetupMessage())
+        disconnect()
+      }, 15000)
     }
     try {
       if (!next) throw Error('No wallet connector available.')
-      if (usingWalletConnect) {
-        const provider = await next.getProvider()
-        provider?.on?.('display_uri', (uri) => {
-          setWcUri(uri)
-          setWcHint('')
-        })
-      }
       const result = await connectAsync({ connector: next })
       if (result.chainId !== base.id) await switchChainAsync({ chainId: base.id })
       setStatus('Wallet connected on Base.')
@@ -183,29 +201,42 @@ export default function App() {
       setWcHint('')
       setWcOriginBlocked(false)
     } catch (error) {
-      const message = originBlocked || isOriginBlocked(formatError(error, ''))
-        ? originBlockedMessage()
+      if (wcUriRef.current) return
+      const message = setupFailed || isWalletConnectSetupFailure(formatError(error, ''))
+        ? walletConnectSetupMessage()
         : formatError(error, 'Could not connect wallet.')
-      if (usingWalletConnect) setWcHint(message)
-      else setStatus(message)
+      if (usingWalletConnect) {
+        setWcOriginBlocked(true)
+        setWcHint(message)
+      } else {
+        setStatus(message)
+      }
     } finally {
+      if (uriTimerRef.current) {
+        window.clearTimeout(uriTimerRef.current)
+        uriTimerRef.current = undefined
+      }
       stopWatching()
       setPendingConnectorId(null)
     }
   }
 
-  async function closeWalletConnect() {
+  function closeWalletConnect() {
+    wcUriRef.current = ''
     setWcOpen(false)
     setWcUri('')
     setWcQr('')
     setWcHint('')
     setWcOriginBlocked(false)
-    try {
-      const provider = await walletConnectConnector?.getProvider()
-      await provider?.disconnect?.()
-    } catch {
-      disconnect()
-    }
+    disconnect()
+  }
+
+  function retryWalletConnect() {
+    if (!walletConnectConnector) return
+    closeWalletConnect()
+    window.setTimeout(() => {
+      connectWallet(walletConnectConnector)
+    }, 400)
   }
 
   async function copyWalletConnectUri() {
@@ -367,6 +398,11 @@ export default function App() {
                     Open wallet
                   </button>
                 </>
+              )}
+              {!wcQr && wcOriginBlocked && (
+                <button type="button" onClick={retryWalletConnect}>
+                  Retry
+                </button>
               )}
               <button type="button" className="secondary" onClick={closeWalletConnect}>
                 Cancel
