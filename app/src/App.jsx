@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import QRCode from 'qrcode'
+import { useState } from 'react'
 import {
   BrowserProvider,
   Contract,
@@ -45,110 +44,13 @@ function formatError(error, fallback) {
   return error ? error.shortMessage ?? error.reason ?? error.message ?? fallback : fallback
 }
 
-function isWalletConnectSetupFailure(value) {
-  return /origin not allowed|Unauthorized: origin|Connection interrupted while trying to subscribe/i.test(
-    String(value ?? ''),
-  )
-}
-
-function walletConnectSetupMessage() {
-  const origin = typeof window === 'undefined' ? 'https://0xgroot.github.io' : window.location.origin
-  return `WalletConnect could not start a pairing session for ${origin}. Reown domain allowlisting can take up to 6 hours. Confirm the domain is exactly that origin (no /feeconsole), wait, hard-reload, then retry.`
-}
-
-function inspectWalletConnectLog(value) {
-  if (value == null) return ''
-  if (typeof value === 'string') return value
-  if (typeof value === 'object') {
-    return [value.msg, value.message, value.reason, value.shortMessage].filter(Boolean).join(' ')
-  }
-  return String(value)
-}
-
-function watchWalletConnectSetupFailure(onFailure) {
-  const methods = ['log', 'info', 'warn', 'error']
-  const originals = Object.fromEntries(methods.map((method) => [method, console[method].bind(console)]))
-  const inspect = (args) => {
-    const text = args.map(inspectWalletConnectLog).join(' ')
-    if (isWalletConnectSetupFailure(text)) onFailure()
-  }
-  for (const method of methods) {
-    console[method] = (...args) => {
-      inspect(args)
-      originals[method](...args)
-    }
-  }
-  const onUnhandled = (event) => {
-    if (isWalletConnectSetupFailure(event?.reason?.message || event?.reason)) onFailure()
-  }
-  window.addEventListener('unhandledrejection', onUnhandled)
-  return () => {
-    for (const method of methods) console[method] = originals[method]
-    window.removeEventListener('unhandledrejection', onUnhandled)
-  }
-}
-
-function connectorLabel(connector) {
-  if (connector.id === 'walletConnect') return 'WalletConnect'
-  if (connector.id === 'injected') return 'Browser Wallet'
-  return connector.name
-}
-
 export default function App() {
   const [status, setStatus] = useState('')
   const { address, isConnected, chainId, connector } = useAccount()
   const { connectAsync, connectors, isPending: isConnecting } = useConnect()
   const { disconnect } = useDisconnect()
   const { switchChainAsync, isPending: isSwitching } = useSwitchChain()
-  const [pendingConnectorId, setPendingConnectorId] = useState(null)
-  const [wcOpen, setWcOpen] = useState(false)
-  const [wcUri, setWcUri] = useState('')
-  const [wcQr, setWcQr] = useState('')
-  const [wcHint, setWcHint] = useState('')
-  const [wcCopied, setWcCopied] = useState(false)
-  const [wcOriginBlocked, setWcOriginBlocked] = useState(false)
-  const wcUriRef = useRef('')
-  const uriTimerRef = useRef()
   const busy = isConnecting || isSwitching
-  const walletConnectConnector = connectors.find((item) => item.id === 'walletConnect')
-
-  useEffect(() => {
-    if (!walletConnectConnector) return undefined
-    const onMessage = (payload) => {
-      if (payload?.type === 'display_uri' && typeof payload.data === 'string') {
-        wcUriRef.current = payload.data
-        if (uriTimerRef.current) {
-          window.clearTimeout(uriTimerRef.current)
-          uriTimerRef.current = undefined
-        }
-        setWcUri(payload.data)
-        setWcHint('')
-        setWcOriginBlocked(false)
-      }
-    }
-    walletConnectConnector.emitter.on('message', onMessage)
-    return () => {
-      walletConnectConnector.emitter.off('message', onMessage)
-    }
-  }, [walletConnectConnector])
-
-  useEffect(() => {
-    if (!wcUri) {
-      setWcQr('')
-      return undefined
-    }
-    let cancelled = false
-    QRCode.toDataURL(wcUri, {
-      margin: 1,
-      width: 280,
-      color: { dark: '#080d16', light: '#ffffff' },
-    }).then((url) => {
-      if (!cancelled) setWcQr(url)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [wcUri])
 
   const [v2Pool, setV2Pool] = useState('')
   const [v2Fee, setV2Fee] = useState('')
@@ -162,94 +64,21 @@ export default function App() {
   const [clResult, setClResult] = useState('')
   const [clBusy, setClBusy] = useState(false)
 
-  async function connectWallet(selectedConnector) {
+  async function connectWallet() {
     setStatus('')
-    setWcCopied(false)
-    const next = selectedConnector ?? connectors.find((item) => item.id === 'injected') ?? connectors[0]
-    setPendingConnectorId(next?.id ?? null)
-    const usingWalletConnect = next?.id === 'walletConnect'
-    let stopWatching = () => {}
-    let setupFailed = false
-    if (usingWalletConnect) {
-      wcUriRef.current = ''
-      setWcOpen(true)
-      setWcUri('')
-      setWcQr('')
-      setWcHint('Connecting to WalletConnect…')
-      setWcOriginBlocked(false)
-      stopWatching = watchWalletConnectSetupFailure(() => {
-        if (wcUriRef.current) return
-        setupFailed = true
-        setWcOriginBlocked(true)
-        setWcHint(walletConnectSetupMessage())
-      })
-      uriTimerRef.current = window.setTimeout(() => {
-        if (wcUriRef.current) return
-        setupFailed = true
-        setWcOriginBlocked(true)
-        setWcHint(walletConnectSetupMessage())
-        disconnect()
-      }, 15000)
-    }
     try {
+      const next = connectors.find((item) => item.id === 'injected') ?? connectors[0]
       if (!next) throw Error('No wallet connector available.')
       const result = await connectAsync({ connector: next })
       if (result.chainId !== base.id) await switchChainAsync({ chainId: base.id })
       setStatus('Wallet connected on Base.')
-      setWcOpen(false)
-      setWcUri('')
-      setWcHint('')
-      setWcOriginBlocked(false)
     } catch (error) {
-      if (wcUriRef.current) return
-      const message = setupFailed || isWalletConnectSetupFailure(formatError(error, ''))
-        ? walletConnectSetupMessage()
-        : formatError(error, 'Could not connect wallet.')
-      if (usingWalletConnect) {
-        setWcOriginBlocked(true)
-        setWcHint(message)
-      } else {
-        setStatus(message)
-      }
-    } finally {
-      if (uriTimerRef.current) {
-        window.clearTimeout(uriTimerRef.current)
-        uriTimerRef.current = undefined
-      }
-      stopWatching()
-      setPendingConnectorId(null)
+      setStatus(formatError(error, 'Could not connect wallet.'))
     }
-  }
-
-  function closeWalletConnect() {
-    wcUriRef.current = ''
-    setWcOpen(false)
-    setWcUri('')
-    setWcQr('')
-    setWcHint('')
-    setWcOriginBlocked(false)
-    disconnect()
-  }
-
-  function retryWalletConnect() {
-    if (!walletConnectConnector) return
-    closeWalletConnect()
-    window.setTimeout(() => {
-      connectWallet(walletConnectConnector)
-    }, 400)
-  }
-
-  async function copyWalletConnectUri() {
-    if (!wcUri) return
-    await navigator.clipboard.writeText(wcUri)
-    setWcCopied(true)
   }
 
   function disconnectWallet() {
     disconnect()
-    setWcOpen(false)
-    setWcUri('')
-    setWcHint('')
     setStatus('Wallet disconnected.')
   }
 
@@ -345,72 +174,13 @@ export default function App() {
           <h1>Fee Console</h1>
         </div>
         <div className="wallet-box">
-          <div className="wallet-actions">
-            {isConnected ? (
-              <button type="button" onClick={disconnectWallet} disabled={busy}>
-                {busy ? 'Connecting...' : 'Disconnect Wallet'}
-              </button>
-            ) : (
-              connectors.map((item) => (
-                <button
-                  key={item.uid}
-                  type="button"
-                  className={item.id === 'walletConnect' ? 'secondary' : undefined}
-                  onClick={() => connectWallet(item)}
-                  disabled={busy}
-                >
-                  {pendingConnectorId === item.id ? 'Connecting...' : connectorLabel(item)}
-                </button>
-              ))
-            )}
-          </div>
+          <button type="button" onClick={isConnected ? disconnectWallet : connectWallet} disabled={busy}>
+            {busy ? 'Connecting...' : isConnected ? 'Disconnect Wallet' : 'Connect Wallet'}
+          </button>
           <p className="wallet-address">{address || 'No wallet connected'}</p>
           {status && <p className="status">{status}</p>}
         </div>
       </header>
-      {wcOpen && (
-        <div
-          className="wc-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="wc-title"
-          onClick={closeWalletConnect}
-        >
-          <div className="wc-modal" onClick={(event) => event.stopPropagation()}>
-            <h2 id="wc-title">WalletConnect</h2>
-            {wcQr ? (
-              <>
-                <p className="hint">Scan this QR code with your mobile wallet.</p>
-                <img className="wc-qr" src={wcQr} alt="WalletConnect QR code" />
-              </>
-            ) : (
-              <p className={wcOriginBlocked ? 'wc-error' : 'status'}>
-                {wcHint || 'Connecting to WalletConnect…'}
-              </p>
-            )}
-            <div className="actions">
-              {wcUri && (
-                <>
-                  <button type="button" onClick={copyWalletConnectUri}>
-                    {wcCopied ? 'Copied' : 'Copy link'}
-                  </button>
-                  <button type="button" className="secondary" onClick={() => { window.location.href = wcUri }}>
-                    Open wallet
-                  </button>
-                </>
-              )}
-              {!wcQr && wcOriginBlocked && (
-                <button type="button" onClick={retryWalletConnect}>
-                  Retry
-                </button>
-              )}
-              <button type="button" className="secondary" onClick={closeWalletConnect}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <section className="grid">
         <article className="card">
           <h2>V2 Pools (classic SAMM/VAMM)</h2>
