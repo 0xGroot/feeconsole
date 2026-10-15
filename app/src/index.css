@@ -181,10 +181,52 @@ button:disabled {
   font-size: 0.8rem;
 }
 
+.pair-box {
+  margin: 12px 0 0;
+}
+
+.pair-name {
+  color: #f4f7fb;
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+.pair-names,
+.pair-lp {
+  color: #9aa7b8;
+  margin: 4px 0 0;
+  font-size: 0.86rem;
+}
+
 .result {
   color: #85e2a8;
   margin: 10px 0 0;
   font-weight: 600;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #080d16cc;
+}
+
+.confirm-modal {
+  width: min(460px, 100%);
+  background: linear-gradient(#141d2cdb, #0b1019f2);
+  border: 1px solid #293245;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 18px 50px #00000052;
+}
+
+.confirm-row {
+  color: #d8e0eb;
+  margin: 8px 0 0;
 }
 
 .status {
